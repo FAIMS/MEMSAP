@@ -1,0 +1,1756 @@
+/*** 'Editable' - you can edit the code below based on the needs ***/
+User user; // don't touch
+String userid;
+
+String verb;
+String archent_id;
+Boolean isContext;
+Boolean newContextGroupRel;
+
+/*setSyncEnabled(true);
+setFileSyncEnabled(true);*/
+
+makeLocalID(){
+    fetchOne("CREATE TABLE IF NOT EXISTS localSettings (key text primary key, value text);");
+    fetchOne("drop view if exists identifierAsSpreadsheet;");
+    fetchOne("create view identifierAsSpreadsheet as select uuid, group_concat(coalesce(measure || ' ' || vocabname || '(' ||freetext||')',  measure || ' (' || freetext ||')',  vocabname || ' (' || freetext ||')',  measure || ' ' || vocabname ,  vocabname || ' (' || freetext || ')',  measure || ' (' || freetext || ')',  measure,  vocabname,  freetext,  measure,  vocabname,  freetext), '-') as response "+
+             "from (select * from latestNonDeletedArchentIdentifiers order by case attributename when 'Site Code' then 1 when 'AreaCode' then 2 when 'Grid Location Reference' then 3 when 'Context ID' then 4 else attributename end) group by uuid;");
+}
+
+makeLocalID();
+
+/*** control ***/
+
+onEvent("control/data", "show", "refreshEntities()");
+onEvent("control/data/ContextList", "click", "loadContext()");
+onEvent("control/data/newContext", "click", "newContext();");
+onEvent("control/data/Search", "click", "clearSearch()");
+onEvent("control/contextGroup/newContextGroup", "click", "newContextGroup(true);newContextGroupRel = false;");
+onEvent("control/contextGroup/GroupList", "click", "loadContextGroup();newContextGroupRel = false;");
+onEvent("control/settings/connectexternal", "click", "startExternalGPS()");
+onEvent("control/settings/connectinternal", "click", "startInternalGPS()");
+onEvent("control/settings/Update", "delayclick", "saveDefaults()");
+onEvent("control/data/SearchType", "click", "search()");
+
+onEvent("control/data/searchButton", "click", "search()");
+
+saveDefaults() {
+    fetchOne("REPLACE INTO localSettings(key, value) VALUES('Site', '"+getFieldValue("control/settings/Site")+"');");
+    fetchOne("REPLACE INTO localSettings(key, value) VALUES('Area', '"+getFieldValue("control/settings/Area")+"');");
+    fetchOne("REPLACE INTO localSettings(key, value) VALUES('Target', '"+getFieldValue("control/settings/Target_Spit_Thickness")+"');");
+    fetchOne("REPLACE INTO localSettings(key, value) VALUES('Volume', '"+getFieldValue("control/settings/BucketVolume")+"');");
+    showToast("Default values saved.");
+}
+
+clearSearch(){
+    setFieldValue("control/data/Search","");
+}
+
+onEvent("control/contextGroup", "show", "reloadGroupList()");
+
+reloadGroupList(){
+    populateList("control/contextGroup/GroupList", fetchEntityList("Context Group"));
+}
+
+refreshEntities() {
+    context_id = null;
+    context_group_id = null;
+    menu = false;
+    search();
+}
+
+search(){    
+    populateList("control/data/ContextList", fetchAll(""+
+        "SELECT uuid, group_concat(coalesce(freetext, ''),'-') as response " +
+        "FROM (select * from latestNonDeletedArchentIdentifiers order by case attributename when 'Site Code' then 1 when 'AreaCode' then 2 when 'Grid Location Reference' then 3 when 'Context ID' then 4 else attributename end ) " +
+        "WHERE aenttypename = 'Context' " +
+        "and uuid in (select uuid " +
+            "from  latestnondeletedarchent join aenttype using (aenttypeid) join idealaent using (aenttypeid) join attributekey using (attributeid) left outer join latestnondeletedaentvalue using (uuid, attributeid) left outer join vocabulary using (vocabid) " +
+            "where ('"+getFieldValue("control/data/SearchType")+"' != 'Search by LotID' " +
+                "AND (freetext like '%"+getFieldValue("control/data/Search")+"%' " +
+                    "or vocabname like '%"+getFieldValue("control/data/Search")+"%' " +
+                    "or measure like '%"+getFieldValue("control/data/Search")+"%' " +
+                    "OR (freetext is null and vocabname is null and measure is null)) " +
+                "and ('"+getFieldValue("control/data/SearchType")+"' = 'All' OR " +
+                    "(attributename = '"+getFieldValue("control/data/SearchType")+"' and coalesce(vocabname, freetext, 'No') = 'No')) " +
+                ") OR (" +
+                "'" + getFieldValue("control/data/SearchType") + "' = 'Search by LotID' AND " +
+                "freetext = '" + getFieldValue("control/data/Search") + "' AND " +
+                "attributename = 'LotID' " +
+                "))  " +
+        "GROUP BY uuid " +
+        "order by response;"));
+}
+
+/*** ArchEnt: Context ***/
+
+
+onEvent("Context/Context_GeneralInformation/Update", "delayclick", "saveContext(\"\")");
+onEvent("Context/Context_GeneralInformation/addGeological", "click", "showTab(\"Context/Context_Deposits\")");
+onEvent("Context/Context_Deposits/addRelationships", "click", "showTab(\"Context/Context_Relationships_to_Other_Contexts\")");
+onEvent("Context/Context_Deposits/Update", "delayclick", "saveContext(\"\")");
+
+onEvent("Context/Context_GeneralInformation/calculateVol", "click", "calculateVol()");
+onEvent("Context/Context_GeneralInformation/Caclulate_Min", "click", "calculateMin()");
+onEvent("Context/Context_GeneralInformation/Caclulate_Max", "click", "calculateMax()");
+
+onEvent("Context/Context_Relationships_to_Other_Contexts/AddContextGroup", "delayclick", "newContextGroup(false);newContextGroupRel = true;");
+onEvent("Context/Context_Relationships_to_Other_Contexts/ShowContextGroup", "click", "loadContextGroupFromContext();newContextGroupRel = false;");
+onEvent("Context/Context_Relationships_to_Other_Contexts/RemoveFromContextGroup", "click", "removeContextGroupReln()");
+onEvent("Context/Context_Relationships_to_Other_Contexts/AddSamples", "click", "showTab(\"Context/Context_Samples\")");
+onEvent("Context/Context_Relationships_to_Other_Contexts/AddContextGroupRel", "delayclick", "addContextGroupRel()");
+
+onEvent("Context/Context_Attachments/attachPhoto", "click", "attachPictureTo(\"Context/Context_Attachments/Photo\")");
+onEvent("Context/Context_Attachments/attachSketch", "click", "attachFileTo(\"Context/Context_Attachments/Sketch\")");
+onEvent("Context/Context_Attachments/viewattached", "click", "viewArchEntAttachedFiles(context_id)");
+onEvent("Context/Context_Attachments/Update", "delayclick", "saveContext(\"\")");
+
+onEvent("Context/Context_Attachments/newPhotoLog", "delayclick", "saveContext(\"isContext=true;newPhotoLog();verb=\\\"ContextPhotographLog\\\";archent_id=context_id;\");");
+onEvent("Context/Context_Attachments/loadPhotoLog", "click", "loadPhotoLog();verb=\"ContextPhotographLog\";archent_id=context_id;isContext=true");
+onEvent("Context/Context_Attachments/deletePhotoLog", "click", "deletePhotoLogFromContext()");
+onEvent("Context/Context_Attachments", "show", "updateAllContextPhotologs()");
+onEvent("Context/Context_Attachments/next", "click", "showTab(\"Context/Review\")");
+
+onEvent("Context/Context_Artefacts/newArtefactGroup", "delayclick", "saveContext(\"newArtefactGroup();\")");
+onEvent("Context/Context_Artefacts/loadArtefactGroup", "click", "loadArtefactGroup()");
+onEvent("Context/Context_Artefacts/deleteArtefactGroup", "delayclick", "deleteArtefactGroupFromContext()");
+onEvent("Context/Context_Artefacts/newSpecialFind", "delayclick", "saveContext(\"newSpecialFind();\")");
+onEvent("Context/Context_Artefacts/loadSpecialFind", "click", "loadSpecialFind()");
+onEvent("Context/Context_Artefacts/deleteSpecialFind", "delayclick", "deleteSpecialFindFromContext()");
+onEvent("Context/Context_Artefacts/Update", "delayclick", "saveContext(\"\")");
+
+
+onEvent("Context/Context_Samples/newSample", "delayclick", "saveContext(\"isContext=true;newSample();verb=\\\"ContextSample\\\";archent_id=context_id;\");");
+onEvent("Context/Context_Samples/loadSample", "click", "loadSample();verb=\"ContextSample\";archent_id=context_id;isContext=true");
+onEvent("Context/Context_Samples/deleteSample", "click", "deleteSampleFromContext()");
+onEvent("Context/Context_Samples/Update", "delayclick", "saveContext(\"\")");
+
+onEvent("Context/Context_Relationships_to_Other_Contexts", "show", "updateAllContextGroups()");
+onEvent("Context/Context_Relationships_to_Other_Contexts", "show", "updateAllContextRelationships()");
+onEvent("Context/Context_Artefacts", "show", "updateAllContextArtefacts()");
+onEvent("Context/Context_Samples", "show", "updateAllContextSamples()");
+
+onEvent("Context/Context_Relationships_to_Other_Contexts/relate", "delayclick", "makeHierReln()");
+onEvent("Context/Context_Relationships_to_Other_Contexts/showReln", "click", "loadContextFromReln()");
+onEvent("Context/Context_Relationships_to_Other_Contexts/deleteReln", "delayclick", "deleteReln()");
+
+onEvent("Context/Review/close", "click", "closeContext()");
+onEvent("Context/Review/Update", "delayclick", "saveContext(\"\")");
+onEvent("Context/Review/SaveAndNew", "delayclick", "saveContext(\"newContext();\")");
+onEvent("Context/Review/Delete", "delayclick", "deleteContext()");
+
+
+String context_id = null;
+
+newContext(){
+    context_id = null;
+    newTabGroup("Context");
+    date = fetchOne("select date('now', 'localtime');");
+    datetime = fetchOne("select datetime('now', 'localtime');");
+    setFieldValue("Context/Context_GeneralInformation/Date_Opened", date.get(0));
+    setFieldValue("Context/Context_GeneralInformation/CreatingDate", datetime.get(0));
+    setFieldValue("Context/Context_GeneralInformation/CreatingUser", username);
+    setFieldValue("Context/Context_GeneralInformation/Site_Code", getFieldValue("control/settings/Site"));
+    setFieldValue("Context/Context_GeneralInformation/AreaCode", getFieldValue("control/settings/Area"));
+    setFieldValue("Context/Context_GeneralInformation/Target_Spit_Thickness", getFieldValue("control/settings/Target_Spit_Thickness"));
+}
+
+loadContext() {
+    context_id = getListItemValue();
+    loadContextFrom(context_id);  
+}
+
+loadContextFrom(contextid) {
+    context_id = contextid;
+    if (isNull(context_id)) return;
+    showTabGroup("Context", context_id);   
+    Object foo = fetchOne("select fname || ' ' || lname from user join archentity using (userid) where uuid = '"+context_id+"' group by uuid having min(aenttimestamp)");
+    setFieldValue("Context/Context_GeneralInformation/CreatingUser", foo.get(0));
+    Object bar = fetchOne("select datetime(aentTimestamp, 'localtime')  from archentity where uuid = '"+context_id+"' group by uuid having min(aenttimestamp);");
+    setFieldValue("Context/Context_GeneralInformation/CreatingDate", bar.get(0));
+}
+
+closeContext(){
+    Object val1 = fetchOne("select sum(vocabname = '{Bulk}') " +
+        "from latestnondeletedaentreln a join latestnondeletedarchent " +
+        "using (uuid) join aenttype using (aenttypeid) join latestnondeletedaentvalue using (uuid) join attributekey using (attributeid) join vocabulary using (vocabid) join latestnondeletedaentreln b using (relationshipid) " +
+        "where a.uuid != b.uuid " +
+        "and attributename = 'Sample Type' "+
+        "and b.uuid = "+context_id +" " +
+        "group by b.uuid "+
+        "order by relationshipid;");
+    Object val2 = fetchOne("select sum(vocabname = '{Open}') " +
+                    "from latestnondeletedaentreln a join latestnondeletedarchent " +
+                    "using (uuid) join aenttype using (aenttypeid) join latestnondeletedaentvalue using (uuid) join attributekey using (attributeid) join vocabulary using (vocabid) join latestnondeletedaentreln b using (relationshipid) " +
+                    "where a.uuid != b.uuid " +
+                    "and attributename = 'Scene Type' " +
+                    "and b.uuid = "+context_id +" " +
+                    "group by b.uuid " +
+                    "order by relationshipid;");
+    Object val3 = fetchOne("select sum(vocabname = '{Close}') " +
+                    "from latestnondeletedaentreln a join latestnondeletedarchent " +
+                    "using (uuid) join aenttype using (aenttypeid) join latestnondeletedaentvalue using (uuid) join attributekey using (attributeid) join vocabulary using (vocabid) join latestnondeletedaentreln b using (relationshipid) " +
+                    "where a.uuid != b.uuid " +
+                    "and attributename = 'Scene Type' " +
+                    "and b.uuid = "+context_id +" " +
+                    "group by b.uuid " +
+                    "order by relationshipid;");
+
+    Object val4 = fetchOne("select count(distinct uuid) from latestnondeletedaentvalue where freetext = '"+getFieldValue("Context/Context_GeneralInformation/LotID")+"' and uuid != "+context_id+";");
+    Object val5 = fetchOne("select vocabName from vocabulary where vocabid = '"+getFieldValue("Context/Review/Bulk_Sample_Mapped")+"';");   
+    int val6 = Integer.parseInt(fetchOne("select count(distinct uuid) > 0 " +
+                        "from latestnondeletedarchent left outer join latestnondeletedaentreln using (uuid) "+
+                        "join relationship using (relationshipid) join relntype using (relntypeid) " +
+                        "where relntypename='AboveBelow' and uuid = '"+context_id+"';").get(0));
+    if(getFieldValue("Context/Context_GeneralInformation/Grid_Location_Reference").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/Context_ID").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/AreaCode").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/LotID").equals("") ||
+        isNull(getFieldValue("Context/Context_GeneralInformation/Wet_Sieved")) ||
+        getFieldValue("Context/Context_GeneralInformation/Excavators").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/Excavation_Method").size() == 0 ||
+        getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_NW").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_NE").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_SE").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_SW").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_Ctr").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_NW").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_NE").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_Ctr").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_SE").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_SW").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/Min_Context_Thickness").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/Max_Context_Thickness").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/Deposit_Volume").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/Your_Interpretation").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/Artefacts_Present").size() == 0 ||
+        isNull(getFieldValue("Context/Context_GeneralInformation/Elevation_Datum_Type")) ||
+        getFieldValue("Context/Context_GeneralInformation/Min_Context_Thickness").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/Max_Context_Thickness").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/Final_Bucket_Count").equals("") ||
+        getFieldValue("Context/Context_GeneralInformation/Deposit_Volume").equals("")){
+        
+        showTab("Context/Context_GeneralInformation");
+        showWarning("Warning","You have not completed all fields on the General tab.");
+        return;
+    } else if (getFieldValue("Context/Context_Deposits/Soil_Munsell_Colour").equals("") ||
+        getFieldValue("Context/Context_Deposits/Soil_Moisture").equals("") ||
+        getFieldValue("Context/Context_Deposits/Soil_Compaction_Type").equals("") ||
+        getFieldValue("Context/Context_Deposits/Deposit_Inclusions").size() == 0 ||
+        getFieldValue("Context/Context_Deposits/Natural_Formations").size() == 0 ||
+        getFieldValue("Context/Context_Deposits/Disturbances").size() == 0){
+        
+        showTab("Context/Context_Deposits");
+        showWarning("Warning","You have not completed all fields on the Geology tab.");
+        return;
+    } else if (!val4.get(0).equals("0")){
+        showTab("Context/Context_GeneralInformation");
+        showWarning("Warning","The Lot ID has been used for another Context. Please enter another one.");
+        return; 
+    } else if (isNull(val1) || val1.get(0).equals(0)) {
+        showTab("Context/Context_Samples");
+        showWarning("Warning","You have not recorded your Bulk sample number.");
+        return;
+    } else if (isNull(val5) || !val5.get(0).equals("Yes")) {
+        showWarning("Warning","You have not mapped your Bulk Sample.");
+        return;
+    } else if (isNull(getFieldValue("Context/Review/Trench_Supervisor_Review")) || isNull(getFieldValue("Context/Review/Site_Director_Review")) ) {
+        showWarning("Warning","You have not specified whether or not this Context has been reviewed.");
+        return;
+    } else if (val2.size() == 0  || val2.get(0).equals("0")) {
+        showTab("Context/Context_Attachments");
+        showWarning("Warning","You have not recorded your opening photo series number.");
+        return;
+    } else if (val3.size() == 0  || val3.get(0).equals("0")) {
+        showTab("Context/Context_Attachments");
+        showWarning("Warning","You have not recorded your closing photo series number.");
+        return;
+    }  else if (val6 == 0) {
+        showTab("Context/Context_Relationships_to_Other_Contexts");
+        showWarning("Warning","You have not related this context as Above or Below another context.");
+        return;
+    } 
+    if(getFieldValue("Context/Review/Date_Closed").equals("")){
+        date = fetchOne("select date('now');");
+        setFieldValue("Context/Review/Date_Closed", date.get(0));
+    } else {
+        showToast("To avoid accidents, please clear the Date Closed field before updating.");
+        return;
+    }
+    saveContext("");
+}
+
+saveContext(String callback) {
+    if (isNull(getFieldValue("Context/Context_GeneralInformation/Site_Code")) || 
+    isNull(getFieldValue("Context/Context_GeneralInformation/AreaCode")) || 
+    isNull(getFieldValue("Context/Context_GeneralInformation/Grid_Location_Reference")) || 
+    isNull(getFieldValue("Context/Context_GeneralInformation/LotID")) ||
+    isNull(getFieldValue("Context/Context_GeneralInformation/Context_ID"))) {
+        showWarning("Validation Error", "Cannot save Context without Site Name, Area Code, Square, Context Number or Lot ID");
+        showTabGroup("Context");
+        return;
+    }
+    if(!isNull(getFieldValue("Context/Context_GeneralInformation/LotID"))) {
+        Object obj = fetchOne("select count(distinct uuid) from latestnondeletedaentvalue join attributekey using (attributeid) where freetext = '" + getFieldValue("Context/Context_GeneralInformation/LotID") + "' and (uuid != '" + context_id + "' or '" + context_id + "' = '') and attributename='LotID';");
+        if(!obj.get(0).equals("0")) {
+            showWarning("Validation Error", "LotID must be unique.");
+            showTabGroup("Context");
+            return;
+        }
+    }
+    
+    if (!isNull(context_id)) {
+        entity = fetchArchEnt(context_id);
+    }
+    saveTabGroup("Context", context_id, null, null, "context_id = getLastSavedRecordId();" + callback);
+}
+
+deleteContext(){
+    if (!isNull(context_id)) {
+        showAlert("Confirm Deletion", "Press OK to Delete this Context!", "reallyDeleteContext()", "doNotDelete()");
+    } else {
+        cancelTabGroup("Context", true);
+    }
+}
+
+reallyDeleteContext(){
+    deleteArchEnt(context_id);
+    cancelTabGroup("Context", false);
+}
+
+doNotDelete(){
+    showToast("Delete Cancelled.");
+}
+
+loadContextFromReln(){
+    String relnid = getFieldValue("Context/Context_Relationships_to_Other_Contexts/listRelns");
+    if (!isNull(relnid)){   
+        Object uuid = fetchOne("select uuid from latestNonDeletedAentReln where relationshipID = '"+relnid+"' and uuid != '"+context_id+"';");
+        context_id = uuid.get(0);
+        loadContextFrom(uuid.get(0));
+    }
+}
+
+deleteReln(){
+    relnid = getFieldValue("Context/Context_Relationships_to_Other_Contexts/listRelns");
+    
+    String query = "insert into aentreln (uuid, relationshipid, deleted, participatesverb, userid) select uuid, relationshipid, 'true', participatesverb, '"+userid+"' from latestnondeletedaentreln where relationshipid = '"+relnid+"';";
+    
+    fetchOne(query);
+    deleteRel(relnid);
+    updateRelns();
+}
+
+
+updateAllContextGroups() {
+    Object contextGroups = new ArrayList();
+    if (!isNull(context_id)){
+        contextGroups = fetchAll("select uuid, group_concat(coalesce(measure || ' ' || vocabname || '(' ||freetext||')',  measure || ' (' || freetext ||')',  vocabname || ' (' || freetext ||')',  measure || ' ' || vocabname ,  vocabname || ' (' || freetext || ')',  measure || ' (' || freetext || ')',  measure,  vocabname,  freetext,  measure,  vocabname,  freetext), ' | ') as response, valuetimestamp\n"+
+            "  FROM (  SELECT uuid, attributeid, vocabid, attributename, vocabname, measure, freetext, certainty, attributetype, valuetimestamp, aenttypename\n"+
+            "            FROM latestNonDeletedArchentIdentifiers\n"+
+            "           WHERE aenttypename = 'Context Group'\n"+
+            "             AND uuid in (select uuid\n"+
+            "                            FROM latestNonDeletedAentReln\n"+
+            "                           where relationshipid in (select relationshipid\n"+
+            "                                                      FROM latestNonDeletedAentReln\n"+
+            "                                                      JOIN relationship using (relationshipid)\n"+
+            "                                                      JOIN relntype using (relntypeid)\n"+
+            "                                                     where uuid = "+context_id+"\n"+
+            "                                                       and relntypeName = 'ContextContextGroup')\n"+
+            "                             and uuid != "+context_id+")\n"+
+            "        ORDER BY uuid, attributename ASC)\n"+
+            "group by uuid\n"+
+            "order by valuetimestamp desc, uuid, attributename;");
+    }
+    populateDropDown("Context/Context_Relationships_to_Other_Contexts/ContextGroupList",  contextGroups);
+    populateDropDown("Context/Context_Relationships_to_Other_Contexts/ContextGroupListUnrelated", 
+        fetchAll("select uuid, group_concat(coalesce(measure || ' ' || vocabname || '(' ||freetext||')',  measure || ' (' || freetext ||')',  vocabname || ' (' || freetext ||')',  measure || ' ' || vocabname ,  vocabname || ' (' || freetext || ')',  measure || ' (' || freetext || ')',  measure,  vocabname,  freetext,  measure,  vocabname,  freetext), ' | ') as response, valuetimestamp\n"+
+            "  FROM (  SELECT uuid, attributeid, vocabid, attributename, vocabname, measure, freetext, certainty, attributetype, valuetimestamp, aenttypename\n"+
+            "            FROM latestNonDeletedArchentIdentifiers\n"+
+            "           WHERE aenttypename = 'Context Group'\n"+
+            "             AND uuid not in (select uuid\n"+
+            "                            FROM latestNonDeletedAentReln\n"+
+            "                           where relationshipid in (select relationshipid\n"+
+            "                                                      FROM latestNonDeletedAentReln\n"+
+            "                                                      JOIN relationship using (relationshipid)\n"+
+            "                                                      JOIN relntype using (relntypeid)\n"+
+            "                                                     where uuid = "+context_id+"\n"+
+            "                                                       and relntypeName = 'ContextContextGroup')\n"+
+            "                             and uuid != "+context_id+")\n"+
+            "        ORDER BY uuid, attributename ASC)\n"+
+            "group by uuid\n"+
+            "order by valuetimestamp desc, uuid, attributename;"));
+}
+
+updateAllContextArtefacts(){
+    Object localArtefactGroup = new ArrayList();
+    Object localSpecialFind = new ArrayList();
+    if (!isNull(context_id)){
+        localArtefactGroup = fetchAll("select uuid, group_concat(coalesce(measure || ' ' || vocabname || '(' ||freetext||')',  measure || ' (' || freetext ||')',  vocabname || ' (' || freetext ||')',  measure || ' ' || vocabname ,  vocabname || ' (' || freetext || ')',  measure || ' (' || freetext || ')',  measure,  vocabname,  freetext,  measure,  vocabname,  freetext), ' | ') as response, valuetimestamp\n"+
+            "  FROM (  SELECT uuid, attributeid, vocabid, attributename, vocabname, measure, freetext, certainty, attributetype, valuetimestamp, aenttypename\n"+
+            "            FROM latestNonDeletedArchentIdentifiers\n"+
+            "           WHERE aenttypename = 'Artefact Group'\n"+
+            "             AND uuid in (select uuid\n"+
+            "                            FROM latestNonDeletedAentReln\n"+
+            "                           where relationshipid in (select relationshipid\n"+
+            "                                                      FROM latestNonDeletedAentReln\n"+
+            "                                                      JOIN relationship using (relationshipid)\n"+
+            "                                                      JOIN relntype using (relntypeid)\n"+
+            "                                                    where uuid = "+context_id+"\n"+
+            "                                                       and relntypeName = 'ContextArtefactGroup')\n"+
+            "                             and uuid != "+context_id+")\n"+
+            "        ORDER BY uuid, attributename ASC)\n"+
+            "group by uuid\n"+
+            "order by valuetimestamp desc, uuid, attributename;");
+        localSpecialFind = fetchAll("select uuid, group_concat(coalesce(measure || ' ' || vocabname || '(' ||freetext||')',  measure || ' (' || freetext ||')',  vocabname || ' (' || freetext ||')',  measure || ' ' || vocabname ,  vocabname || ' (' || freetext || ')',  measure || ' (' || freetext || ')',  measure,  vocabname,  freetext,  measure,  vocabname,  freetext), ' | ') as response, valuetimestamp\n"+
+            "  FROM (  SELECT uuid, attributeid, vocabid, attributename, vocabname, measure, freetext, certainty, attributetype, valuetimestamp, aenttypename\n"+
+            "            FROM latestNonDeletedArchentIdentifiers\n"+
+            "           WHERE aenttypename = 'Special Find'\n"+
+            "             AND uuid in (select uuid\n"+
+            "                            FROM latestNonDeletedAentReln\n"+
+            "                           where relationshipid in (select relationshipid\n"+
+            "                                                      FROM latestNonDeletedAentReln\n"+
+            "                                                      JOIN relationship using (relationshipid)\n"+
+            "                                                      JOIN relntype using (relntypeid)\n"+
+            "                                                     where uuid = "+context_id+"\n"+
+            "                                                       and relntypeName = 'ContextSpecialFind')\n"+
+            "                             and uuid != "+context_id+")\n"+
+            "        ORDER BY uuid, attributename ASC)\n"+
+            "group by uuid\n"+
+            "order by valuetimestamp desc, uuid, attributename;");
+    }
+    populateDropDown("Context/Context_Artefacts/artefactGroupList", localArtefactGroup);
+    populateDropDown("Context/Context_Artefacts/specialFindList", localSpecialFind);
+}
+
+updateAllContextSamples(){
+    Object localSample = new ArrayList();
+    if (!isNull(context_id)){
+        localSample = fetchAll("select uuid, group_concat(coalesce(measure || ' ' || vocabname || '(' ||freetext||')',  measure || ' (' || freetext ||')',  vocabname || ' (' || freetext ||')',  measure || ' ' || vocabname ,  vocabname || ' (' || freetext || ')',  measure || ' (' || freetext || ')',  measure,  vocabname,  freetext,  measure,  vocabname,  freetext), ' | ') as response, valuetimestamp\n"+
+            "  FROM (  SELECT uuid, attributeid, vocabid, attributename, vocabname, measure, freetext, certainty, attributetype, valuetimestamp, aenttypename\n"+
+            "            FROM latestNonDeletedArchentIdentifiers\n"+
+            "           WHERE aenttypename = 'Sample'\n"+
+            "             AND uuid in (select uuid\n"+
+            "                            FROM latestNonDeletedAentReln\n"+
+            "                           where relationshipid in (select relationshipid\n"+
+            "                                                      FROM latestNonDeletedAentReln\n"+
+            "                                                      JOIN relationship using (relationshipid)\n"+
+            "                                                      JOIN relntype using (relntypeid)\n"+
+            "                                                     where uuid = "+context_id+"\n"+
+            "                                                       and relntypeName = 'ContextSample')\n"+
+            "                             and uuid != "+context_id+")\n"+
+            "        ORDER BY uuid, attributename ASC)\n"+
+            "group by uuid\n"+
+            "order by valuetimestamp desc, uuid, attributename;");
+    }
+    populateDropDown("Context/Context_Samples/sampleList", localSample);
+}
+
+updateAllContextRelationships(){
+    String context_name = getFieldValue("Context/Context_GeneralInformation/Site_Code") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/AreaCode") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/Grid_Location_Reference") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/Context_ID") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/LotID");
+    setFieldValue("Context/Context_Relationships_to_Other_Contexts/context_id", context_name);
+
+    Object contextList = new ArrayList();
+    
+    if (!isNull(context_id)){
+        contextList = fetchAll("select uuid, response from identifierAsSpreadsheet join latestNonDeletedArchent using (uuid) join aenttype using (aenttypeid) where aenttypename = 'Context' and uuid != '"+context_id+"' group by uuid;" );
+    }    
+    populateDropDown("Context/Context_Relationships_to_Other_Contexts/context", contextList);
+    updateRelns();
+}
+
+makeHierReln(){
+    if (isNull(getFieldValue("Context/Context_GeneralInformation/Context_ID"))) {
+        showWarning("Logic Error", "Cannot save record without id");
+        return;
+    }
+
+    if (isNull(context_id)){
+        showToast("You must have saved your entity.");
+        return;
+    }
+    String[] arguments = getFieldValue("Context/Context_Relationships_to_Other_Contexts/reln").split("~!~");
+    String dest = getFieldValue("Context/Context_Relationships_to_Other_Contexts/context");
+
+    saveEntitiesToHierRel(arguments[0], context_id, dest, arguments[1], arguments[2]);
+    updateRelns();
+}
+
+
+updateRelns(){
+    // String context_name = getFieldValue("Context/Context_GeneralInformation/Site_Code") + "-" +
+    //                       getFieldValue("Context/Context_GeneralInformation/AreaCode") + "-" +
+    //                       getFieldValue("Context/Context_GeneralInformation/Grid_Location_Reference") + "-" +
+    //                       getFieldValue("Context/Context_GeneralInformation/Context_ID") + "-" +
+    //                       getFieldValue("Context/Context_GeneralInformation/LotID");
+    // Object contextRelnList = fetchAll("select relationshipid, group_concat(coalesce(measure || ' ' || vocabname || '(' ||freetext||')',  measure || ' (' || freetext ||')',  vocabname || ' (' || freetext ||')',  measure || ' ' || vocabname ,  vocabname || ' (' || freetext || ')',  measure || ' (' || freetext || ')',  measure,  vocabname,  freetext,  measure,  vocabname,  freetext), '-') || ' ' || participatesVerb || ' "+context_name+"' as response, valuetimestamp, aentrelntimestamp "+
+    //     "  FROM (  SELECT uuid, attributeid, vocabid, attributename, vocabname, measure, freetext, certainty, attributetype, valuetimestamp, aenttypename, participatesVerb, relationshipid,aentrelntimestamp "+
+    //     "            FROM latestNonDeletedArchentIdentifiers join latestNonDeletedAentReln using (uuid) "+
+    //     "           WHERE aenttypename = 'Context'  "+
+    //     "             AND uuid in (select uuid "+
+    //     "                            FROM latestNonDeletedAentReln  "+
+    //     "                           where relationshipid in (select relationshipid  "+
+    //     "                                                      FROM latestNonDeletedAentReln  "+
+    //     "                                                      JOIN relationship using (relationshipid)  "+
+    //     "                                                      JOIN relntype using (relntypeid)  "+
+    //     "                                                     where uuid = "+context_id+" "+
+    //     "                                                       and relntypeName not like '%Context%' )  "+
+    //     "                             and uuid != "+context_id+")  "+        
+    //     "                order by uuid, case attributename when 'Site Code' then 1 when 'AreaCode' then 2 when 'Grid Location Reference' then 3 when 'Context ID' then 4 else attributename end "+
+    //     "        ) "+
+    //     "group by uuid, relationshipid order by aentrelntimestamp desc ; ");
+    // populateDropDown("Context/Context_Relationships_to_Other_Contexts/listRelns", contextRelnList);
+    Object contextRelnList = fetchAll("select parent.relationshipid, parent.participatesverb || ' ' || child.response "+
+        "from (latestNonDeletedAentReln) parent  "+
+        "join (latestNonDeletedAentReln join identifierAsSpreadsheet using (uuid)) child on (parent.relationshipid = child.relationshipid and parent.uuid != child.uuid) "+
+        "join latestNonDeletedRelationship using (relationshipid) join relntype using (relntypeid) "+
+        "where relntypename not like 'Context%' "+
+        "and parent.uuid = '"+context_id+"'  "+
+        "order by relntimestamp desc");
+    
+    populateDropDown("Context/Context_Relationships_to_Other_Contexts/listRelns", contextRelnList);
+}
+
+loadContextAttributes(){
+    populateCheckBoxGroup("Context/Context_GeneralInformation/Excavation_Method", makeVocab("Excavation Method"));
+    populateRadioGroup("Context/Context_GeneralInformation/Wet_Sieved", makeVocab("Wet Sieved"));
+    populateRadioGroup("Context/Context_GeneralInformation/Elevation_Datum_Type", makeVocab("Elevation Datum Type"));
+    populateDropDown("Context/Context_GeneralInformation/Target_Spit_Thickness", makeVocab("Target Spit Thickness"));
+    populateHierarchicalDropDown("Context/Context_GeneralInformation/Your_Interpretation", "Your Interpretation");
+    populateCheckBoxGroup("Context/Context_GeneralInformation/Artefacts_Present", makeVocab("Artefacts Present"));
+
+    populateHierarchicalDropDown("Context/Context_Deposits/Soil_Munsell_Colour", "Soil Munsell Colour");
+    populateDropDown("Context/Context_Deposits/Soil_Compaction_Type", makeVocab("Soil Compaction Type"));
+    populateDropDown("Context/Context_Deposits/Soil_Moisture", makeVocab("Soil Moisture"));
+    populateCheckBoxGroup("Context/Context_Deposits/Deposit_Inclusions", makeVocab("Deposit Inclusions"));
+    populateCheckBoxGroup("Context/Context_Deposits/Natural_Formations", makeVocab("Natural Formations"));
+    populateCheckBoxGroup("Context/Context_Deposits/Disturbances", makeVocab("Disturbances"));
+    populateRadioGroup("Context/Review/Bulk_Sample_Mapped", makeVocab("Bulk Sample Mapped"));
+    populateRadioGroup("Context/Review/Trench_Supervisor_Review", makeVocab("Trench Supervisor Review"));
+    populateRadioGroup("Context/Review/Site_Director_Review", makeVocab("Site Director Review"));
+
+    relnList = fetchAll("select relntypename||'~!~'||coalesce(nullif(parent||'~!~'||child,'~!~'),relntypename||'~!~'||relntypename) as relntypeid, coalesce(nullif(parent,''), relntypename) as name, relntypeid from relntype where relntypename not like '%Context%' and relntypename not like '%SpecialFind%' union select relntypename||'~!~'||coalesce(nullif(child||'~!~'||parent,'~!~'),relntypename||'~!~'||relntypename), coalesce(nullif(child,''), relntypename) as name, relntypeid from relntype where relntypename not like '%Context%' and relntypename not like '%SpecialFind%' order by relntypeid, name;");
+    populateDropDown("Context/Context_Relationships_to_Other_Contexts/reln", relnList);
+}
+
+populateSoilColour() {
+    Object obj = fetchOne("select vocabName from vocabulary where vocabid = '"+getFieldValue("Context/Context_Deposits/Soil_Munsell_Colour")+"';");
+    print(obj);
+    String colour = "";
+    if(obj.size() > 0) {
+        colour = obj.get(0);
+    }
+    setFieldValue("Context/Context_Deposits/Soil_Colour", colour);
+}
+
+removeContextGroupReln() {
+    context_group_id = getFieldValue("Context/Context_Relationships_to_Other_Contexts/ContextGroupList");
+    if(!isNull(context_id) && !isNull(context_group_id)) {
+        Object obj = fetchOne("select context.uuid, contextgroup.uuid, relationshipid  " +
+            "from latestnondeletedaentreln context join latestnondeletedaentreln contextgroup using (relationshipid) " +
+            "where context.uuid != contextgroup.uuid " +
+            "and context.uuid = " + context_id + " " +
+            "and contextgroup.uuid = " + context_group_id + ";");
+        String relnid = obj.get(2);
+        if(!isNull(relnid)) {
+            String query = "insert into aentreln (uuid, relationshipid, deleted, participatesverb, userid) select uuid, relationshipid, 'true', participatesverb, '" + userid + "' from latestnondeletedaentreln where relationshipid = '" + relnid + "';";
+            fetchOne(query);
+            deleteRel(relnid);
+            updateAllContextGroups();
+        }
+        
+    }
+}
+
+calculateVol() {
+    double count = isNull(getFieldValue("Context/Context_GeneralInformation/Final_Bucket_Count")) ? 0 : Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Final_Bucket_Count"));
+    double vol = isNull(getFieldValue("control/settings/BucketVolume")) ? 0 : Double.parseDouble(getFieldValue("control/settings/BucketVolume"));
+    setFieldValue("Context/Context_GeneralInformation/Deposit_Volume", vol*count);
+    
+}
+
+calculateMin() {
+    ArrayList vals = new ArrayList();
+    if(!isNull(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_NW")) && !isNull(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_NW"))) {
+        vals.add(Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_NW")) - Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_NW")));
+    }
+    if(!isNull(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_NE")) && !isNull(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_NE"))) {
+        vals.add(Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_NE")) - Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_NE")));
+    }
+    if(!isNull(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_Ctr")) && !isNull(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_Ctr"))) {
+        vals.add(Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_Ctr")) - Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_Ctr")));
+    }
+    if(!isNull(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_SW")) && !isNull(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_SW"))) {
+        vals.add(Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_SW")) - Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_SW")));
+    }
+    if(!isNull(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_SE")) && !isNull(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_SE"))) {
+        vals.add(Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_SE")) - Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_SE")));
+    }
+    
+    if(vals.size() == 0) {
+        setFieldValue("Context/Context_GeneralInformation/Min_Context_Thickness", 0);
+    } else {
+        double min = vals.get(0);
+        for(int i = 1; i < vals.size(); i++) {
+            if(vals.get(i) < min) {
+                min = vals.get(i);
+            }
+        }
+        setFieldValue("Context/Context_GeneralInformation/Min_Context_Thickness", (double)Math.round(min * 100) / 100);
+    }
+}
+
+calculateMax() {
+    ArrayList vals = new ArrayList();
+     if(!isNull(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_NW")) && !isNull(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_NW"))) {
+        vals.add(Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_NW")) - Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_NW")));
+    }
+    if(!isNull(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_NE")) && !isNull(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_NE"))) {
+        vals.add(Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_NE")) - Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_NE")));
+    }
+    if(!isNull(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_Ctr")) && !isNull(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_Ctr"))) {
+        vals.add(Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_Ctr")) - Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_Ctr")));
+    }
+    if(!isNull(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_SW")) && !isNull(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_SW"))) {
+        vals.add(Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_SW")) - Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_SW")));
+    }
+    if(!isNull(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_SE")) && !isNull(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_SE"))) {
+        vals.add(Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Highest_Level_SE")) - Double.parseDouble(getFieldValue("Context/Context_GeneralInformation/Context_Lowest_Level_SE")));
+    }
+    if(vals.size() == 0) {
+        setFieldValue("Context/Context_GeneralInformation/Max_Context_Thickness", 0);
+    } else {
+        double max = vals.get(0);
+        for(int i = 1; i < vals.size(); i++) {
+            if(vals.get(i) > max) {
+                max = vals.get(i);
+            }
+        }
+        setFieldValue("Context/Context_GeneralInformation/Max_Context_Thickness", (double)Math.round(max * 100) / 100);
+    }
+}
+
+addContextGroupRel(){
+    if (isNull(context_id)) {
+        saveContext("saveEntitiesToRel(\"ContextContextGroup\", getFieldValue(\"Context/Context_Relationships_to_Other_Contexts/ContextGroupListUnrelated\"), context_group_id);updateAllContextGroups();");
+    } else {
+        saveEntitiesToRel("ContextContextGroup", getFieldValue("Context/Context_Relationships_to_Other_Contexts/ContextGroupListUnrelated"), context_id);
+        updateAllContextGroups();
+    }
+}
+
+/*** RelnEnt: Context Group***/
+onEvent("ContextGroup/ContextGroup_Details/Update", "delayclick", "saveContextGroup(\"\")");
+onEvent("ContextGroup/ContextGroup_Details/Delete", "click", "deleteContextGroup()");
+onEvent("ContextGroup/ContextGroup_Contexts/Update", "delayclick", "saveContextGroup(\"\")");
+onEvent("ContextGroup/ContextGroup_Contexts/AddContext", "click", "addToContextGroup()");
+onEvent("ContextGroup/ContextGroup_Contexts/ShowContext", "click", "loadContextFromContextGroup()");
+onEvent("ContextGroup/ContextGroup_Contexts/RemoveContext", "click", "removeFromContextGroup()");
+
+onEvent("ContextGroup/ContextGroup_Samples", "show", "updateAllContextGroupSamples()");
+onEvent("ContextGroup/ContextGroup_Samples/newSample", "delayclick", "saveContextGroup(\"isContext=false;newSample();verb=\\\"ContextGroupSample\\\";archent_id=context_group_id;\");");
+onEvent("ContextGroup/ContextGroup_Samples/loadSample", "click", "loadContextGroupSample();verb=\"ContextGroupSample\";archent_id=context_group_id;isContext=false;");
+onEvent("ContextGroup/ContextGroup_Samples/deleteSample", "click", "deleteSampleFromContextGroup()");
+onEvent("ContextGroup/ContextGroup_Samples/Update", "delayclick", "saveContext(\"\")");
+
+onEvent("ContextGroup/ContextGroup_Attachments", "show", "updateAllContextGroupPhotologs()");
+onEvent("ContextGroup/ContextGroup_Attachments/attachPhoto", "click", "attachPictureTo(\"ContextGroup/ContextGroup_Attachments/Photo\")");
+onEvent("ContextGroup/ContextGroup_Attachments/attachSketch", "click", "attachFileTo(\"ContextGroup/ContextGroup_Attachments/Sketch\")");
+onEvent("ContextGroup/ContextGroup_Attachments/viewattached", "click", "viewArchEntAttachedFiles(context_group_id)");
+onEvent("ContextGroup/ContextGroup_Attachments/Update", "delayclick", "saveContextGroup(\"\")");
+onEvent("ContextGroup/ContextGroup_Attachments/Delete", "click", "deleteContextGroup()");
+onEvent("ContextGroup/ContextGroup_Attachments/newPhotoLog", "delayclick", "saveContextGroup(\"isContext=false;newPhotoLog();verb=\\\"ContextGroupPhotographLog\\\";archent_id=context_group_id;\");");
+onEvent("ContextGroup/ContextGroup_Attachments/loadPhotoLog", "click", "loadContextGroupPhotoLog();verb=\"ContextGroupPhotographLog\";archent_id=context_group_id;isContext=false");
+onEvent("ContextGroup/ContextGroup_Attachments/deletePhotoLog", "click", "deletePhotoLogFromContextGroup()");
+
+
+
+String context_group_id = null;
+
+newContextGroup(menu){
+    if (!menu && isNull(getFieldValue("Context/Context_GeneralInformation/Context_ID"))) {
+        showWarning("Logic Error", "Cannot save record without id");
+        return;
+    }
+    newTabGroup("ContextGroup");
+    context_group_id = null;
+    date = fetchOne("select datetime(CURRENT_TIMESTAMP, 'localtime')");
+
+    sitearea = fetchOne("select site.value, area.value from localsettings site, localsettings area where site.key = 'Site' and area.key = 'Area'");
+    setFieldValue("ContextGroup/ContextGroup_Details/Site_Code", sitearea.get(0));
+    setFieldValue("ContextGroup/ContextGroup_Details/Area_Code", sitearea.get(1)); //rut roe... the ranger's going to get us!
+    setFieldValue("ContextGroup/ContextGroup_Details/Datum", "WGS84");
+    setFieldValue("ContextGroup/ContextGroup_Details/Geological_Unit_Number", "N/A");
+    setFieldValue("ContextGroup/ContextGroup_Details/Creation_Date", date.get(0));
+    setFieldValue("ContextGroup/ContextGroup_Details/Created_By", username);
+    autoNumContextGroup();
+    populateContextGroup();
+}
+
+loadContextGroup(){
+    context_group_id = getListItemValue();
+    showTabGroup("ContextGroup", context_group_id);
+    Object foo = fetchOne("select fname || ' ' || lname from user join archentity using (userid) where uuid = '"+context_group_id+"' group by uuid having min(aenttimestamp)");
+    setFieldValue("ContextGroup/ContextGroup_Details/Created_By", foo.get(0));
+    Object bar = fetchOne("select uuid, datetime(aentTimestamp, 'localtime')  from archentity where uuid = '"+context_group_id+"' group by uuid having min(aenttimestamp);");
+    setFieldValue("ContextGroup/ContextGroup_Details/Creation_Date", bar.get(1));
+
+    populateContextGroup();
+}
+
+loadContextGroupFromContext() {
+    context_group_id = getFieldValue("Context/Context_Relationships_to_Other_Contexts/ContextGroupList");
+    if (isNull(context_group_id)) return;
+    showTabGroup("ContextGroup", context_group_id);
+    Object foo = fetchOne("select fname || ' ' || lname from user join archentity using (userid) where uuid = '"+context_group_id+"' group by uuid having min(aenttimestamp)");
+    setFieldValue("ContextGroup/ContextGroup_Details/Created_By", foo.get(0));
+    Object bar = fetchOne("select uuid, datetime(aentTimestamp, 'localtime')  from archentity where uuid = '"+context_group_id+"' group by uuid having min(aenttimestamp);");
+    setFieldValue("ContextGroup/ContextGroup_Details/Creation_Date", bar.get(1));
+    populateContextGroup();
+}
+
+loadContextGroupAttributes(){
+    populateDropDown("ContextGroup/ContextGroup_Details/Profile_Aspect", makeVocab("Profile Aspect"));
+    populateHierarchicalDropDown("ContextGroup/ContextGroup_Details/Soil_Munsell_Colour", "Soil Munsell Colour");
+    populateDropDown("ContextGroup/ContextGroup_Details/Elevation_Determination", makeVocab("Elevation Determination"));
+    populateRadioGroup("ContextGroup/ContextGroup_Details/Start_Depth_Location", makeVocab("Start Depth"));
+    populateDropDown("ContextGroup/ContextGroup_Details/Compaction", makeVocab("Compaction"));
+    populateDropDown("ContextGroup/ContextGroup_Details/Structure", makeVocab("Structure"));
+    populateDropDown("ContextGroup/ContextGroup_Details/Soil_Texture_Actual", makeVocab("Soil Texture Actual"));
+    populateDropDown("ContextGroup/ContextGroup_Details/Rounding", makeVocab("Rounding"));
+    populateDropDown("ContextGroup/ContextGroup_Details/Structure_Modifiers", makeVocab("Structure Modifiers"));
+    populateDropDown("ContextGroup/ContextGroup_Details/Sorting", makeVocab("Sorting"));
+    populateCheckBoxGroup("ContextGroup/ContextGroup_Details/Disturbances", makeVocab("Disturbances"));
+    populateDropDown("ContextGroup/ContextGroup_Details/Upper_Boundary", makeVocab("Upper Boundary"));
+    populateDropDown("ContextGroup/ContextGroup_Details/Lower_Boundary", makeVocab("Lower Boundary"));
+}
+
+saveContextGroup(String callback){
+    if (isNull(context_group_id)) context_group_id = null;
+    if (isNull(getFieldValue("ContextGroup/ContextGroup_Details/Title"))) {
+        showWarning("Validation Error", "Context Group requires a title to be saved.");
+        return;
+    }
+    Object values = fetchOne("select vocabName from vocabulary where vocabid = '"+getFieldValue("ContextGroup/ContextGroup_Details/Soil_Munsell_Colour")+"';");   
+    setFieldValue("ContextGroup/ContextGroup_Details/Soil_Colour", values.get(0));
+    saveTabGroup("ContextGroup", context_group_id, null, null, "context_group_id = getLastSavedRecordId(); onContextGroupSaved(); populateContextGroup();" + callback);
+}
+
+onContextGroupSaved(){
+    if(newContextGroupRel) {
+        context_group_id = getLastSavedRecordId();
+        saveEntitiesToRel("ContextContextGroup", context_id, context_group_id);
+    }
+}
+
+addToContextGroup() {
+    if (isNull(context_group_id)) {
+        saveContextGroup("saveEntitiesToRel(\"ContextContextGroup\", getFieldValue(\"ContextGroup/ContextGroup_Contexts/AddContextList\"), context_group_id);populateContextGroup();");
+    } else {
+        saveEntitiesToRel("ContextContextGroup", getFieldValue("ContextGroup/ContextGroup_Contexts/AddContextList"), context_group_id);
+        populateContextGroup();
+    }
+    
+}
+
+populateContextGroup() {
+    populateDropDown("ContextGroup/ContextGroup_Contexts/AddContextList", 
+        fetchAll("select uuid, group_concat(coalesce(measure || ' ' || vocabname || '(' ||freetext||')',  measure || ' (' || freetext ||')',  vocabname || ' (' || freetext ||')',  measure || ' ' || vocabname ,  vocabname || ' (' || freetext || ')',  measure || ' (' || freetext || ')',  measure,  vocabname,  freetext,  measure,  vocabname,  freetext), '-') as response, valuetimestamp " +
+            "  FROM (  SELECT uuid, attributeid, vocabid, attributename, vocabname, measure, freetext, certainty, attributetype, valuetimestamp, aenttypename\n"+
+            "            FROM latestNonDeletedArchentIdentifiers\n"+
+            "           WHERE aenttypename = 'Context'\n"+
+            "             AND uuid not in (select uuid\n"+
+            "                            FROM latestNonDeletedAentReln\n"+
+            "                           where relationshipid in (select relationshipid\n"+
+            "                                                      FROM latestNonDeletedAentReln\n"+
+            "                                                      JOIN relationship using (relationshipid)\n"+
+            "                                                      JOIN relntype using (relntypeid)\n"+
+            "                                                     where uuid = "+context_group_id+"\n"+
+            "                                                       and relntypeName = 'ContextContextGroup')\n"+
+            "                             and uuid != "+context_group_id+")\n"+
+            "                order by uuid, case attributename when 'Site Code' then 1 when 'AreaCode' then 2 when 'Grid Location Reference' then 3 when 'Context ID' then 4 else attributename end "+
+            "        ) "+
+            "group by uuid "+
+            "order by valuetimestamp desc, uuid, attributename;"));
+    populateDropDown("ContextGroup/ContextGroup_Contexts/ContextList", 
+        fetchAll("select uuid, group_concat(coalesce(measure || ' ' || vocabname || '(' ||freetext||')',  measure || ' (' || freetext ||')',  vocabname || ' (' || freetext ||')',  measure || ' ' || vocabname ,  vocabname || ' (' || freetext || ')',  measure || ' (' || freetext || ')',  measure,  vocabname,  freetext,  measure,  vocabname,  freetext), '-') as response, valuetimestamp " +
+            "  FROM (  SELECT uuid, attributeid, vocabid, attributename, vocabname, measure, freetext, certainty, attributetype, valuetimestamp, aenttypename\n"+
+            "            FROM latestNonDeletedArchentIdentifiers\n"+
+            "           WHERE aenttypename = 'Context'\n"+
+            "             AND uuid in (select uuid\n"+
+            "                            FROM latestNonDeletedAentReln\n"+
+            "                           where relationshipid in (select relationshipid\n"+
+            "                                                      FROM latestNonDeletedAentReln\n"+
+            "                                                      JOIN relationship using (relationshipid)\n"+
+            "                                                      JOIN relntype using (relntypeid)\n"+
+            "                                                     where uuid = "+context_group_id+"\n"+
+            "                                                       and relntypeName = 'ContextContextGroup')\n"+
+            "                             and uuid != "+context_group_id+")\n"+
+            "                order by uuid, case attributename when 'Site Code' then 1 when 'AreaCode' then 2 when 'Grid Location Reference' then 3 when 'Context ID' then 4 else attributename end "+
+            "        ) "+
+            "group by uuid "+
+            "order by valuetimestamp desc, uuid, attributename;"));
+}
+
+loadContextFromContextGroup(){
+    loadContextFrom(getFieldValue("ContextGroup/ContextGroup_Contexts/ContextList"));
+}
+
+deleteContextGroup(){
+    if (!isNull(context_group_id)) {
+        showAlert("Confirm Deletion", "Press OK to Delete this Context Group!", "reallyDeleteContextGroup()", "doNotDelete()");
+    }
+}
+
+reallyDeleteContextGroup(){
+    deleteArchEnt(context_group_id);
+    cancelTabGroup("ContextGroup", false);
+}
+
+doNotDelete(){
+    showToast("Delete Cancelled.");
+}
+
+removeFromContextGroup() {
+    context_id = getFieldValue("ContextGroup/ContextGroup_Contexts/ContextList");
+    if(!isNull(context_id) && !isNull(context_group_id)) {
+        Object obj = fetchOne("select context.uuid, contextgroup.uuid, relationshipid  " +
+            "from latestnondeletedaentreln context join latestnondeletedaentreln contextgroup using (relationshipid) " +
+            "where context.uuid != contextgroup.uuid " +
+            "and context.uuid = " + context_id + " " +
+            "and contextgroup.uuid = " + context_group_id + ";");
+        String relnid = obj.get(2);
+        if(!isNull(relnid)) {
+            String query = "insert into aentreln (uuid, relationshipid, deleted, participatesverb, userid) select uuid, relationshipid, 'true', participatesverb, '" + userid + "' from latestnondeletedaentreln where relationshipid = '" + relnid + "';";
+            fetchOne(query);
+            deleteRel(relnid);
+            populateContextGroup();
+        }
+        
+    }
+}
+
+updateAllContextGroupSamples() {
+    Object contextGroupSamples = new ArrayList();
+    if (!isNull(context_group_id)){
+        contextGroupSamples = fetchAll("select uuid, group_concat(coalesce(measure || ' ' || vocabname || '(' ||freetext||')',  measure || ' (' || freetext ||')',  vocabname || ' (' || freetext ||')',  measure || ' ' || vocabname ,  vocabname || ' (' || freetext || ')',  measure || ' (' || freetext || ')',  measure,  vocabname,  freetext,  measure,  vocabname,  freetext), ' | ') as response, valuetimestamp\n"+
+            "  FROM (  SELECT uuid, attributeid, vocabid, attributename, vocabname, measure, freetext, certainty, attributetype, valuetimestamp, aenttypename\n"+
+            "            FROM latestNonDeletedArchentIdentifiers\n"+
+            "           WHERE aenttypename = 'Sample'\n"+
+            "             AND uuid in (select uuid\n"+
+            "                            FROM latestNonDeletedAentReln\n"+
+            "                           where relationshipid in (select relationshipid\n"+
+            "                                                      FROM latestNonDeletedAentReln\n"+
+            "                                                      JOIN relationship using (relationshipid)\n"+
+            "                                                      JOIN relntype using (relntypeid)\n"+
+            "                                                     where uuid = "+context_group_id+"\n"+
+            "                                                       and relntypeName = 'ContextGroupSample')\n"+
+            "                             and uuid != "+context_group_id+")\n"+
+            "        ORDER BY uuid, attributename ASC)\n"+
+            "group by uuid\n"+
+            "order by valuetimestamp desc, uuid, attributename;");
+    }
+    populateDropDown("ContextGroup/ContextGroup_Samples/sampleList",  contextGroupSamples);
+}
+
+deleteSampleFromContextGroup() {
+    sample_id = getFieldValue("ContextGroup/ContextGroup_Samples/sampleList");
+    if (!isNull(sample_id)) {
+        showAlert("Confirm Deletion", "Press OK to Delete this Sample!", "reallyDeleteSample()", "doNotDelete()");
+    }
+}
+
+updateAllContextGroupPhotologs() {
+    Object contextGroupPhotologs = new ArrayList();
+    if (!isNull(context_group_id)){
+        contextGroupPhotologs = fetchAll("select uuid, group_concat(coalesce(measure || ' ' || vocabname || '(' ||freetext||')',  measure || ' (' || freetext ||')',  vocabname || ' (' || freetext ||')',  measure || ' ' || vocabname ,  vocabname || ' (' || freetext || ')',  measure || ' (' || freetext || ')',  measure,  vocabname,  freetext,  measure,  vocabname,  freetext), ' | ') as response, valuetimestamp\n"+
+            "  FROM (  SELECT uuid, attributeid, vocabid, attributename, vocabname, measure, freetext, certainty, attributetype, valuetimestamp, aenttypename\n"+
+            "            FROM latestNonDeletedArchentIdentifiers\n"+
+            "           WHERE aenttypename = 'Photograph Log'\n"+
+            "             AND uuid in (select uuid\n"+
+            "                            FROM latestNonDeletedAentReln\n"+
+            "                           where relationshipid in (select relationshipid\n"+
+            "                                                      FROM latestNonDeletedAentReln\n"+
+            "                                                      JOIN relationship using (relationshipid)\n"+
+            "                                                      JOIN relntype using (relntypeid)\n"+
+            "                                                     where uuid = "+context_group_id+"\n"+
+            "                                                       and relntypeName = 'ContextGroupPhotographLog')\n"+
+            "                             and uuid != "+context_group_id+")\n"+
+            "        ORDER BY uuid, attributename ASC)\n"+
+            "group by uuid\n"+
+            "order by valuetimestamp desc, uuid, attributename;");
+    }
+    populateDropDown("ContextGroup/ContextGroup_Attachments/PhotoLogList",  contextGroupPhotologs);
+}
+
+deletePhotoLogFromContextGroup(){
+    photolog_id = getFieldValue("ContextGroup/ContextGroup_Attachments/PhotoLogList");
+    if (!isNull(photolog_id)) {
+        showAlert("Confirm Deletion", "Press OK to Delete this Photograph Log!", "reallyDeletePhotoLog()", "doNotDelete()");
+    }
+}
+
+autoNumContextGroup(){
+    Object counter = fetchOne("select sitevalue || '-'||areavalue || '-'||foo  " +
+      "from (select max(cast(replace(replace(freetext, site.value||'-', ''), area.value||'-','') as integer ) )+1 as foo, site.value as sitevalue, area.value as areavalue  " +
+             "from latestnondeletedaentvalue join attributekey using (attributeid), (select value from localsettings where key = 'Site') site, (select value from localsettings where key = 'Area') area " +
+            "where uuid in (select uuid " +
+                             "from latestnondeletedaentvalue ae join localsettings on (value=freetext or value=vocabid)  " +
+                             "join latestnondeletedarchent using (uuid) join aenttype using (aenttypeid) " +
+                            "where aenttypename = 'Context Group') " +
+              "and attributename = 'Context Group ID');");
+    if(isNull(counter.get(0))){
+        String contextGroupID = getFieldValue("control/settings/Site") + "-" + getFieldValue("control/settings/Area") + "-" + "1";
+        setFieldValue("ContextGroup/ContextGroup_Details/Context_Group_ID", contextGroupID);
+    } else {
+        setFieldValue("ContextGroup/ContextGroup_Details/Context_Group_ID", counter.get(0));    
+    }
+    
+    
+}
+
+
+/*** Artefact Group ***/
+onEvent("Artefact_Group/Artefact_Group_GeneralInformation/attachPhoto", "click", "attachPictureTo(\"Artefact_Group/Artefact_Group_GeneralInformation/Photo\")");
+onEvent("Artefact_Group/Artefact_Group_GeneralInformation/attachSketch", "click", "attachFileTo(\"Artefact_Group/Artefact_Group_GeneralInformation/Sketch\")");
+onEvent("Artefact_Group/Artefact_Group_GeneralInformation/viewattached", "click", "viewArchEntAttachedFiles(artefact_group_id)");
+onEvent("Artefact_Group/Artefact_Group_GeneralInformation/Update", "delayclick", "saveArtefactGroup()");
+onEvent("Artefact_Group/Artefact_Group_GeneralInformation/SaveAndNew", "delayclick", "saveAndNewArtefactGroup()");
+onEvent("Artefact_Group/Artefact_Group_GeneralInformation/Delete", "delayclick", "deleteArtefactGroup()");
+onEvent("Artefact_Group/Artefact_Group_GeneralInformation/Duplicate", "delayclick", "duplicateArtefactGroup()");
+
+String artefact_group_id = null;
+
+newArtefactGroup(){
+    artefact_group_id = null;
+    newTabGroup("Artefact_Group");
+    String context_name = getFieldValue("Context/Context_GeneralInformation/Site_Code") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/AreaCode") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/Grid_Location_Reference") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/Context_ID") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/LotID");
+    setFieldValue("Artefact_Group/Artefact_Group_GeneralInformation/Context_ID", context_name);
+}
+
+loadArtefactGroup() {
+    artefact_group_id = getFieldValue("Context/Context_Artefacts/artefactGroupList");
+    if (isNull(artefact_group_id)) return;
+    showTabGroup("Artefact_Group", artefact_group_id);
+}
+
+saveArtefactGroup() {
+    if (isNull(getFieldValue("Artefact_Group/Artefact_Group_GeneralInformation/Artefact_Group_ID"))) {
+        showWarning("Logic Error", "Cannot save record without id");
+        return;
+    }
+    if (!isNull(artefact_group_id)) {
+        entity = fetchArchEnt(artefact_group_id);
+    }
+
+    if (isNull(context_id)) {
+        showWarning("Logic Error", "Artefact Group cannot be saved as parent context is not saved or loaded.");
+        return null;
+    } else {
+        saveTabGroup("Artefact_Group", artefact_group_id, null, null, "artefact_group_id = getLastSavedRecordId(); onArtefactGroupSaved(); cancelTabGroup(\"Artefact_Group\", false);showTab(\"Context/Context_Artefacts\");");
+    }
+}
+
+saveAndNewArtefactGroup(){
+    if (isNull(getFieldValue("Artefact_Group/Artefact_Group_GeneralInformation/Artefact_Group_ID"))) {
+        showWarning("Logic Error", "Cannot save record without id");
+        return;
+    }
+
+    if (!isNull(artefact_group_id)) {
+        entity = fetchArchEnt(artefact_group_id);
+    }
+
+    if (isNull(context_id)) {
+        showWarning("Logic Error", "Artefact Group cannot be saved as parent context is not saved or loaded.");
+        return null;
+    } else {
+       saveTabGroup("Artefact_Group", artefact_group_id, null, null, "artefact_group_id = getLastSavedRecordId(); onArtefactGroupSaved(); newArtefactGroup();");
+    }
+}
+
+duplicateArtefactGroup(){
+    if (isNull(getFieldValue("Artefact_Group/Artefact_Group_GeneralInformation/Artefact_Group_ID"))) {
+        showWarning("Logic Error", "Cannot save record without id");
+        return;
+    }
+
+    if (!isNull(artefact_group_id)) {
+        entity = fetchArchEnt(artefact_group_id);
+    }
+
+    if (isNull(context_id)) {
+        showWarning("Logic Error", "Artefact Group cannot be saved as parent context is not saved or loaded.");
+        return null;
+    } else {
+       saveTabGroup("Artefact_Group", artefact_group_id, null, null, "artefact_group_id = getLastSavedRecordId(); onArtefactGroupSaved(); artefact_group_id=null; setFieldValue(\"Artefact_Group/Artefact_Group_GeneralInformation/Artefact_Group_ID\", \"\")");
+    }
+}
+
+onArtefactGroupSaved(){
+    artefact_group_id = getLastSavedRecordId();
+    saveEntitiesToRel("ContextArtefactGroup", context_id, artefact_group_id);
+    
+}
+
+deleteArtefactGroupFromContext(){
+    artefact_group_id = getFieldValue("Context/Context_Artefacts/artefactGroupList");
+    if (!isNull(artefact_group_id)) {
+        showAlert("Confirm Deletion", "Press OK to Delete this Artefact Group!", "reallyDeleteArtefactGroup()", "doNotDelete()");
+    }
+}
+
+deleteArtefactGroup(){
+    if (!isNull(artefact_group_id)) {
+        showAlert("Confirm Deletion", "Press OK to Delete this Artefact Group!", "reallyDeleteArtefactGroup()", "doNotDelete()");
+    } else {
+        cancelTabGroup("Artefact_Group", true);
+    }
+}
+
+reallyDeleteArtefactGroup(){
+    deleteArchEnt(artefact_group_id);
+    showTabGroup("Artefact_Group");
+    cancelTabGroup("Artefact_Group", false);
+}
+
+doNotDelete(){
+    showToast("Delete Cancelled.");
+}
+
+loadArtefactGroupAttributes(){
+    populateHierarchicalDropDown("Artefact_Group/Artefact_Group_GeneralInformation/Artefact_Class", "Artefact Class");
+}
+
+
+/*** Sample ***/
+onEvent("Sample/Sample_GeneralInformation/attachPhoto", "click", "attachPictureTo(\"Sample/Sample_GeneralInformation/Photo\")");
+onEvent("Sample/Sample_GeneralInformation/attachSketch", "click", "attachFileTo(\"Sample/Sample_GeneralInformation/Sketch\")");
+onEvent("Sample/Sample_GeneralInformation/viewattached", "click", "viewArchEntAttachedFiles(sample_id)");
+onEvent("Sample/Sample_GeneralInformation/Update", "delayclick", "saveSample()");
+onEvent("Sample/Sample_GeneralInformation/Delete", "delayclick", "deleteSample()");
+onEvent("Sample/Sample_GeneralInformation/SaveAndNew", "delayclick", "saveAndNewSample()");
+onEvent("Sample/Sample_GeneralInformation/Duplicate", "delayclick", "duplicateSample()");
+
+String sample_id = null;
+
+newSample(){
+    sample_id = null;
+    newTabGroup("Sample");
+    if(isContext) {
+        String context_name = getFieldValue("Context/Context_GeneralInformation/Site_Code") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/AreaCode") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/Grid_Location_Reference") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/Context_ID") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/LotID");
+        setFieldValue("Sample/Sample_GeneralInformation/Context_ID", context_name);
+    } else {
+        setFieldValue("Sample/Sample_GeneralInformation/Context_ID", getFieldValue("ContextGroup/ContextGroup_Details/Context_Group_ID"));
+    }
+    
+}
+
+loadSample() {
+    sample_id = getFieldValue("Context/Context_Samples/sampleList");
+    if (isNull(sample_id)) return;
+    showTabGroup("Sample", sample_id);
+}
+
+loadContextGroupSample() {
+    sample_id = getFieldValue("ContextGroup/ContextGroup_Samples/sampleList");
+    if (isNull(sample_id)) return;
+    showTabGroup("Sample", sample_id);
+}
+
+saveSample() {
+    if (isNull(getFieldValue("Sample/Sample_GeneralInformation/Sample_ID"))) {
+        showWarning("Logic Error", "Cannot save record without id");
+        return;
+    }
+    
+    if (!isNull(sample_id)) {
+        entity = fetchArchEnt(sample_id);
+    }
+    if(isContext){
+        saveTabGroup("Sample", sample_id, null, null, "sample_id = getLastSavedRecordId(); onSampleSaved(); cancelTabGroup(\"Sample\", false);showTab(\"Context/Context_Samples\");");    
+    } else {
+        saveTabGroup("Sample", sample_id, null, null, "sample_id = getLastSavedRecordId(); onSampleSaved(); cancelTabGroup(\"Sample\", false);showTab(\"ContextGroup/ContextGroup_Samples\");");
+    }
+    
+}
+
+saveAndNewSample() {
+    if (isNull(getFieldValue("Sample/Sample_GeneralInformation/Sample_ID"))) {
+        showWarning("Logic Error", "Cannot save record without id");
+        return;
+    }
+    if (!isNull(sample_id)) {
+        entity = fetchArchEnt(sample_id);
+    }
+    saveTabGroup("Sample", sample_id, null, null, "sample_id = getLastSavedRecordId(); onSampleSaved(); newSample();");
+}
+
+duplicateSample(){
+    if (isNull(getFieldValue("Sample/Sample_GeneralInformation/Sample_ID"))) {
+        showWarning("Logic Error", "Cannot save record without id");
+        return;
+    }
+
+    if (!isNull(sample_id)) {
+        entity = fetchArchEnt(sample_id);
+    }
+    saveTabGroup("Sample", sample_id, null, null, "sample_id = getLastSavedRecordId(); onSampleSaved(); sample_id = null; setFieldValue(\"Sample/Sample_GeneralInformation/Sample_ID\", \"\")");
+}
+
+onSampleSaved(){
+    sample_id = getLastSavedRecordId();
+    saveEntitiesToRel(verb, archent_id, sample_id);
+    
+
+}
+
+deleteSampleFromContext(){
+    sample_id = getFieldValue("Context/Context_Samples/sampleList");
+    if (!isNull(sample_id)) {
+        showAlert("Confirm Deletion", "Press OK to Delete this Sample!", "reallyDeleteSample()", "doNotDelete()");
+    }
+}
+
+deleteSample(){
+    if (!isNull(sample_id)) {
+        showAlert("Confirm Deletion", "Press OK to Delete this Sample!", "reallyDeleteSample()", "doNotDelete()");
+    } else {
+        cancelTabGroup("Sample", true);
+    }
+}
+
+reallyDeleteSample(){
+    deleteArchEnt(sample_id);
+    showTabGroup("Sample");
+    cancelTabGroup("Sample", false);
+}
+
+doNotDelete(){
+    showToast("Delete Cancelled.");
+}
+
+loadSampleAttributes(){
+    populateDropDown("Sample/Sample_GeneralInformation/Sample_Type", makeVocab("Sample Type"));
+    populateDropDown("Sample/Sample_GeneralInformation/Collection_Method", makeVocab("Collection Method"));
+}
+
+
+doNotDelete(){
+    showToast("Delete Cancelled.");
+}
+
+/*** Special Find ***/
+onEvent("Special_Find/Special_Find_GeneralInformation/attachSketch", "click", "attachFileTo(\"Special_Find/Special_Find_GeneralInformation/Sketch\")");
+onEvent("Special_Find/Special_Find_GeneralInformation/attachPhoto", "click", "attachPictureTo(\"Special_Find/Special_Find_GeneralInformation/Photo\")");
+onEvent("Special_Find/Special_Find_GeneralInformation/Update", "delayclick", "saveSpecialFind()");
+onEvent("Special_Find/Special_Find_GeneralInformation/Delete", "delayclick", "deleteSpecialFind()");
+onEvent("Special_Find/Special_Find_GeneralInformation/SaveAndNew", "delayclick", "saveAndNewSpecialFind()");
+onEvent("Special_Find/Special_Find_GeneralInformation/Duplicate", "delayclick", "duplicateSpecialFind()");
+
+onEvent("Special_Find/Special_Find_Location", "show", "refreshSpecialFindLocations()");
+onEvent("Special_Find/Special_Find_Location/New_Special_Find_Location", "delayclick", "saveAndNewSpecialFindLocation()");
+onEvent("Special_Find/Special_Find_Location/List_Special_Find_Location", "click", "loadSpecialFindLocation()");
+
+String special_find_id = null;
+
+newSpecialFind(){
+    special_find_id = null;
+    newTabGroup("Special_Find");
+
+    String context_name = getFieldValue("Context/Context_GeneralInformation/Site_Code") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/AreaCode") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/Grid_Location_Reference") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/Context_ID") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/LotID");
+    setFieldValue("Special_Find/Special_Find_GeneralInformation/Context_ID", context_name);
+}
+
+loadSpecialFind() {
+    special_find_id = getFieldValue("Context/Context_Artefacts/specialFindList");
+    if (isNull(special_find_id)) return;
+    showTabGroup("Special_Find", special_find_id);
+}
+
+saveSpecialFind() {
+    if (isNull(getFieldValue("Special_Find/Special_Find_GeneralInformation/Special_Find_ID"))) {
+        showWarning("Logic Error", "Cannot save record without id");
+        return;
+    }
+    
+    if (!isNull(special_find_id)) {
+        entity = fetchArchEnt(special_find_id);
+    }
+    if(!isNull(getFieldValue("Special_Find/Special_Find_GeneralInformation/Special_Find_ID"))) {
+        Object obj = fetchOne("select count(distinct uuid) from latestnondeletedaentvalue join attributekey using (attributeid) where freetext = '" + getFieldValue("Special_Find/Special_Find_GeneralInformation/Special_Find_ID") + "' and (uuid != '" + special_find_id + "' or '" + special_find_id + "' = '') and attributename='Special Find ID';");
+        if(!obj.get(0).equals("0")) {
+            showWarning("Validation Error", "Plotted Find ID must be unique.");
+            showTabGroup("Special_Find");
+            return;
+        }
+    }
+    saveTabGroup("Special_Find", special_find_id, null, null, "special_find_id = getLastSavedRecordId(); onSpecialFindSaved(); cancelTabGroup(\"Special_Find\", false);showTab(\"Context/Context_Artefacts\");");
+}
+
+saveAndNewSpecialFindLocation() {
+    if (isNull(getFieldValue("Special_Find/Special_Find_GeneralInformation/Special_Find_ID"))) {
+        showWarning("Logic Error", "Cannot save record without id");
+        return;
+    }
+    
+    if (!isNull(special_find_id)) {
+        entity = fetchArchEnt(special_find_id);
+    }
+
+    if (isNull(context_id)) {
+        showWarning("Logic Error", "Special_Find cannot be saved as parent context is not saved or loaded.");
+        return null;
+    } else {
+       saveTabGroup("Special_Find", special_find_id, null, null, "special_find_id = getLastSavedRecordId(); onSpecialFindSaved(); newSpecialFindLocation()");
+    }    
+}
+
+saveAndNewSpecialFind() {
+    if (isNull(getFieldValue("Special_Find/Special_Find_GeneralInformation/Special_Find_ID"))) {
+        showWarning("Logic Error", "Cannot save record without id");
+        return;
+    }
+    if (!isNull(special_find_id)) {
+        entity = fetchArchEnt(special_find_id);
+    }
+
+    if (isNull(context_id)) {
+        showWarning("Logic Error", "Special_Find cannot be saved as parent context is not saved or loaded.");
+        return null;
+    } else {
+       saveTabGroup("Special_Find", special_find_id, null, null, "special_find_id = getLastSavedRecordId(); onSpecialFindSaved(); newSpecialFind();");
+    }
+}
+
+duplicateSpecialFind(){
+    if (isNull(getFieldValue("Special_Find/Special_Find_GeneralInformation/Special_Find_ID"))) {
+        showWarning("Logic Error", "Cannot save record without id");
+        return;
+    }
+
+    if (!isNull(special_find_id)) {
+        entity = fetchArchEnt(special_find_id);
+    }
+
+    if (isNull(context_id)) {
+        showWarning("Logic Error", "Special_Find cannot be saved as parent context is not saved or loaded.");
+        return null;
+    } else {
+       saveTabGroup("Special_Find", special_find_id, null, null, "special_find_id = getLastSavedRecordId(); onSpecialFindSaved(); special_find_id = null; setFieldValue(\"Special_Find/Special_Find_GeneralInformation/Special_Find_ID\", \"\")");
+    }
+}
+
+onSpecialFindSaved(){
+    special_find_id = getLastSavedRecordId();
+    saveEntitiesToRel("ContextSpecialFind", context_id, special_find_id);
+    
+
+}
+
+deleteSpecialFindFromContext(){
+    special_find_id = getFieldValue("Context/Context_Artefacts/specialFindList");
+    if (!isNull(special_find_id)) {
+        showAlert("Confirm Deletion", "Press OK to Delete this Special Find!", "reallyDeleteSpecialFind()", "doNotDelete()");
+    }
+}
+
+deleteSpecialFind(){
+    if (!isNull(special_find_id)) {
+        showAlert("Confirm Deletion", "Press OK to Delete this Special Find!", "reallyDeleteSpecialFind()", "doNotDelete()");
+    } else {
+        cancelTabGroup("Special_Find", true);
+    }
+}
+
+reallyDeleteSpecialFind(){
+    deleteArchEnt(special_find_id);
+    showTabGroup("Special_Find");
+    cancelTabGroup("Special_Find", false);
+}
+
+doNotDelete(){
+    showToast("Delete Cancelled.");
+}
+
+loadSpecialFindAttributes(){
+    populateHierarchicalDropDown("Special_Find/Special_Find_GeneralInformation/Special_Find_Class", "Special Find Class");
+}
+
+refreshSpecialFindLocations() {
+    Object specialFindLocations = new ArrayList();
+    if (!isNull(special_find_id)){
+        specialFindLocations = fetchAll("select uuid, group_concat(coalesce(measure || ' ' || vocabname || '(' ||freetext||')',  measure || ' (' || freetext ||')',  vocabname || ' (' || freetext ||')',  measure || ' ' || vocabname ,  vocabname || ' (' || freetext || ')',  measure || ' (' || freetext || ')',  measure,  vocabname,  freetext,  measure,  vocabname,  freetext), ' | ') as response, valuetimestamp\n"+
+            "  FROM (  SELECT uuid, attributeid, vocabid, attributename, vocabname, measure, freetext, certainty, attributetype, valuetimestamp, aenttypename\n"+
+            "            FROM latestNonDeletedArchentIdentifiers\n"+
+            "           WHERE aenttypename = 'Special Find Location'\n"+
+            "             AND uuid in (select uuid\n"+
+            "                            FROM latestNonDeletedAentReln\n"+
+            "                           where relationshipid in (select relationshipid\n"+
+            "                                                      FROM latestNonDeletedAentReln\n"+
+            "                                                      JOIN relationship using (relationshipid)\n"+
+            "                                                      JOIN relntype using (relntypeid)\n"+
+            "                                                     where uuid = "+special_find_id+"\n"+
+            "                                                       and relntypeName = 'SpecialFindSpecialFindLocation')\n"+
+            "                             and uuid != "+special_find_id+")\n"+
+            "           order by uuid, case attributename when 'X' then 1 when 'Y' then 2 when 'Z' then 3 when 'Plotted Find Location Note' then 4 else attributename end )\n"+
+            "group by uuid\n"+
+            "order by valuetimestamp desc, uuid, attributename;");
+    }
+    populateList("Special_Find/Special_Find_Location/List_Special_Find_Location",  specialFindLocations);    
+}
+
+/*** Arch Ent: PhotoLog ***/
+onEvent("Photograph_Log/Photograph_Log/Update", "delayclick", "savePhotoLog()");
+onEvent("Photograph_Log/Photograph_Log/Delete", "delayclick", "deletePhotoLog()");
+onEvent("Photograph_Log/Photograph_Log/SaveAndNew", "delayclick", "saveAndNewPhotoLog()");
+onEvent("Photograph_Log/Photograph_Log/ReturnToContext", "delayclick", "cancelTabGroup(\"Photograph_Log\", true)");
+
+String photolog_id = null;
+
+newPhotoLog(){
+    photolog_id = null;
+    newTabGroup("Photograph_Log");
+    if(isContext) {
+        String context_name = getFieldValue("Context/Context_GeneralInformation/Site_Code") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/AreaCode") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/Grid_Location_Reference") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/Context_ID") + "-" +
+                          getFieldValue("Context/Context_GeneralInformation/LotID");
+        setFieldValue("Photograph_Log/Photograph_Log/Context_ID", context_name);
+    } else {
+        setFieldValue("Photograph_Log/Photograph_Log/Context_ID", getFieldValue("ContextGroup/ContextGroup_Details/Context_Group_ID"));
+    }
+}
+
+loadPhotoLog() {
+    photolog_id = getFieldValue("Context/Context_Attachments/PhotoLogList");
+    if (isNull(photolog_id)) return;
+    showTabGroup("Photograph_Log", photolog_id);
+}
+
+loadContextGroupPhotoLog() {
+    photolog_id = getFieldValue("ContextGroup/ContextGroup_Attachments/PhotoLogList");
+    if (isNull(photolog_id)) return;
+    showTabGroup("Photograph_Log", photolog_id);
+}
+
+loadPhotoLogAttributes(){
+    populateCheckBoxGroup("Photograph_Log/Photograph_Log/Looking_Toward", makeVocab("Looking Toward"));
+    populateDropDown("Photograph_Log/Photograph_Log/Scene_Type",  makeVocab("Scene Type"));
+}
+
+savePhotoLog() {
+    if (isNull(getFieldValue("Photograph_Log/Photograph_Log/Photograph_Reference_ID"))) {
+        showWarning("Logic Error", "Cannot save Photgraph without Reference ID.");
+        return;
+    }
+    
+    if (!isNull(photolog_id)) {
+        entity = fetchArchEnt(photolog_id);
+    }
+    if(isContext) {
+        saveTabGroup("Photograph_Log", photolog_id, null, null, "photolog_id = getLastSavedRecordId(); onPhotoLogSaved(); cancelTabGroup(\"Photograph_Log\", false);showTab(\"Context/Context_Attachments\");");    
+    } else {
+        saveTabGroup("Photograph_Log", photolog_id, null, null, "photolog_id = getLastSavedRecordId(); onPhotoLogSaved(); cancelTabGroup(\"Photograph_Log\", false);showTab(\"ContextGroup/ContextGroup_Attachments\");");
+    }
+    
+}
+
+saveAndNewPhotoLog() {
+    if (isNull(getFieldValue("Photograph_Log/Photograph_Log/Photograph_Reference_ID"))) {
+        showWarning("Logic Error", "Cannot save record without id");
+        return;
+    }
+    if (!isNull(photolog_id)) {
+        entity = fetchArchEnt(photolog_id);
+    }
+    saveTabGroup("Photograph_Log", photolog_id, null, null, "photolog_id = getLastSavedRecordId(); onPhotoLogSaved(); newPhotoLog();");
+}
+
+onPhotoLogSaved(){
+    photolog_id = getLastSavedRecordId();
+    saveEntitiesToRel(verb, archent_id, photolog_id);
+    
+
+}
+
+deletePhotoLogFromContext(){
+    photolog_id = getFieldValue("Context/Context_Attachments/PhotoLogList");
+    if (!isNull(photolog_id)) {
+        showAlert("Confirm Deletion", "Press OK to Delete this Photograph Log!", "reallyDeletePhotoLog()", "doNotDelete()");
+    }
+}
+
+deletePhotoLog(){
+    if (!isNull(photolog_id)) {
+        showAlert("Confirm Deletion", "Press OK to Delete this Photograph Log!", "reallyDeletePhotoLog()", "doNotDelete()");
+    } else {
+        cancelTabGroup("Photograph_Log", true);
+    }
+}
+
+reallyDeletePhotoLog(){
+    deleteArchEnt(photolog_id);
+    showTabGroup("Photograph_Log");
+    cancelTabGroup("Photograph_Log", false);
+}
+
+doNotDelete(){
+    showToast("Delete Cancelled.");
+}
+
+updateAllContextPhotologs() {
+    Object contextPhotologs = new ArrayList();
+    if (!isNull(context_id)){
+        contextPhotologs = fetchAll("select uuid, group_concat(coalesce(measure || ' ' || vocabname || '(' ||freetext||')',  measure || ' (' || freetext ||')',  vocabname || ' (' || freetext ||')',  measure || ' ' || vocabname ,  vocabname || ' (' || freetext || ')',  measure || ' (' || freetext || ')',  measure,  vocabname,  freetext,  measure,  vocabname,  freetext), ' | ') as response, valuetimestamp\n"+
+            "  FROM (  SELECT uuid, attributeid, vocabid, attributename, vocabname, measure, freetext, certainty, attributetype, valuetimestamp, aenttypename\n"+
+            "            FROM latestNonDeletedArchentIdentifiers\n"+
+            "           WHERE aenttypename = 'Photograph Log'\n"+
+            "             AND uuid in (select uuid\n"+
+            "                            FROM latestNonDeletedAentReln\n"+
+            "                           where relationshipid in (select relationshipid\n"+
+            "                                                      FROM latestNonDeletedAentReln\n"+
+            "                                                      JOIN relationship using (relationshipid)\n"+
+            "                                                      JOIN relntype using (relntypeid)\n"+
+            "                                                     where uuid = "+context_id+"\n"+
+            "                                                       and relntypeName = 'ContextPhotographLog')\n"+
+            "                             and uuid != "+context_id+")\n"+
+            "        ORDER BY uuid, attributename ASC)\n"+
+            "group by uuid\n"+
+            "order by valuetimestamp desc, uuid, attributename;");
+    }
+    populateDropDown("Context/Context_Attachments/PhotoLogList",  contextPhotologs);
+}
+
+/*** Special Find Locations***/
+onEvent("Special_Find_Location/Special_Find_Location/Update", "delayclick", "saveSpecialFindLocation(\"cancelTabGroup(\\\"Special_Find_Location\\\", false);\")");
+onEvent("Special_Find_Location/Special_Find_Location/UpdateAndNew", "delayclick", "saveSpecialFindLocation(\"newSpecialFindLocation()\")");
+onEvent("Special_Find_Location/Special_Find_Location/Delete", "delayclick", "deleteSpecialFindLocation()");
+
+String special_find_location_id = null;
+
+newSpecialFindLocation(){
+    special_find_location_id = null;
+    newTabGroup("Special_Find_Location");
+}
+
+loadSpecialFindLocation() {
+    special_find_location_id = getListItemValue();
+    loadSpecialFindLocationFrom(special_find_location_id);
+}
+
+loadSpecialFindLocationFrom(archent_id) {
+    special_find_location_id = archent_id;
+    if (isNull(special_find_location_id)) return;
+    
+    showTabGroup("Special_Find_Location", special_find_location_id);
+}
+
+saveSpecialFindLocation(String callback) {
+    if (isNull(getFieldValue("Special_Find_Location/Special_Find_Location/X")) 
+        || isNull(getFieldValue("Special_Find_Location/Special_Find_Location/Y")) 
+        || isNull(getFieldValue("Special_Find_Location/Special_Find_Location/Z"))) {
+        showWarning("Logic Error", "Cannot save Special Find Location without X, Y or Z ordinates");
+        return;
+    }
+    if (!isNull(special_find_location_id)) {
+        entity = fetchArchEnt(special_find_location_id);
+    }
+    saveTabGroup("Special_Find_Location", special_find_location_id, null, null, "special_find_location_id = getLastSavedRecordId(); onSpecialFindLocationSaved();" + callback);
+}
+
+onSpecialFindLocationSaved(){
+    special_find_location_id = getLastSavedRecordId();
+    saveEntitiesToRel("SpecialFindSpecialFindLocation", special_find_location_id, special_find_id);
+    showToast("Associated with Special Find");
+}
+
+deleteSpecialFindLocation(){
+    if (!isNull(special_find_location_id)) {
+        showAlert("Confirm Deletion", "Press OK to Delete this Special Find Location Record!", "reallyDeleteSpecialFindLocation()", "doNotDelete()");
+    } else {
+        cancelTabGroup("Special_Find_Location", true);
+    }
+}
+
+reallyDeleteSpecialFindLocation(){
+    deleteArchEnt(special_find_location_id);
+    cancelTabGroup("Special_Find_Location", false);
+}
+
+takeSpecialFindLocationGPS(){
+    Object position = getGPSPosition();
+    Object projPosition = getGPSPositionProjected();
+    if (projPosition != null ){
+        Double latitude = position.getLatitude();
+        Double longitude = position.getLongitude();
+        Double northing = projPosition.getLatitude();
+        Double easting = projPosition.getLongitude();
+        setFieldValue("Special_Find_Location/Special_Find_Location/Latitude", latitude);
+        setFieldValue("Special_Find_Location/Special_Find_Location/Longitude", longitude);
+        setFieldValue("Special_Find_Location/Special_Find_Location/Northing", northing);
+        setFieldValue("Special_Find_Location/Special_Find_Location/Easting", easting);
+    } else {
+        showToast("GPS Not initialized");
+    }
+}
+
+/*** MISC ***/
+
+saveEntitiesToRel(type, entity1, entity2) {
+    if (isNull(entity1) || isNull(entity2)) return;
+    
+    rel_id = saveRel(null, type, null, null);
+    addReln(entity1, rel_id, null);
+    addReln(entity2, rel_id, null);
+}
+
+saveEntitiesToHierRel(type, entity1, entity2, e1verb, e2verb) {
+    if (isNull(entity1) || isNull(entity2)) return;
+    
+    rel_id = saveRel(null, type, null, null);
+    addReln(entity1, rel_id, e1verb);
+    addReln(entity2, rel_id, e2verb);
+}
+
+makeVocab(String attrib){
+    Object a = fetchAll("select vocabid, vocabname from vocabulary join attributekey using (attributeid) where attributename = '"+attrib+"' ");
+    return a;
+}
+
+makePictureGallery(String attrib){
+    fetchAll("select vocabid, vocabname, pictureurl from vocabulary left join attributekey using (attributeid) where attributename = '" + attrib + "' order by vocabname;");
+}
+
+/*** 'Uneditable' - you can edit the code below with extreme precaution ***/
+
+DATA_ENTRY_LAYER = "Data Entry Layer";
+DATA_ENTRY_LAYER_ID = 0;
+
+initMap() {
+    setMapZoom("Context/map/map", 15.0f);
+
+    showBaseMap("Context/map/map", "Base Layer", "files/data/maps/OraraSmall.tif");
+    createCanvasLayer("Context/map/map", "Non-saved sketch layer");
+
+    DATA_ENTRY_LAYER_ID = createCanvasLayer("Context/map/map", DATA_ENTRY_LAYER);
+
+    isEntity = true;
+    queryName = "All entities";
+    querySQL = "SELECT uuid, aenttimestamp FROM latestNonDeletedArchEntIdentifiers";
+        
+    addDatabaseLayerQuery("Context/map/map", queryName, querySQL);
+
+    addTrackLogLayerQuery("Context/map/map", "track log entities", 
+        "SELECT uuid, max(aenttimestamp) as aenttimestamp\n" + 
+        " FROM archentity join aenttype using (aenttypeid)\n" +
+        " where archentity.deleted is null\n" + 
+        "   and lower(aenttypename) = lower('gps_track')\n" + 
+        " group by uuid\n" + 
+        " having max(aenttimestamp)");
+        
+    addSelectQueryBuilder("Context/map/map", "Select entity by type", createQueryBuilder(
+        "select uuid\n" + 
+        "  from latestNonDeletedArchent\n" + 
+        "  JOIN latestNonDeletedAentValue using (uuid)\n" + 
+        "  join aenttype using (aenttypeid)\n" + 
+        "  LEFT OUTER JOIN vocabulary using (vocabid, attributeid) \n" + 
+        "  where lower(aenttypename) = lower(?) \n" + 
+        "   group by uuid").addParameter("Type", "RemoteSensingContext"));
+        
+    //addLegacySelectQueryBuilder("Context/map/map", "Select geometry by id", "files/data/maps/sydney.sqlite", "Geology100_Sydney", 
+    //    createLegacyQueryBuilder("Select PK_UID from Geology100_Sydney where PK_UID = ?").addParameter("ID", null));
+                    
+    // define database layer styles for points, lines, polygons and text
+    ps = createPointStyle(10, Color.BLUE, 0.2f, 0.5f);
+    ls = createLineStyle(10, Color.GREEN, 0.05f, 0.3f, null);
+    pos = createPolygonStyle(10, Color.parseColor("#440000FF"), createLineStyle(10, Color.parseColor("#AA000000"), 0.01f, 0.3f, null));
+    ts = createTextStyle(10, Color.WHITE, 40, Typeface.SANS_SERIF);
+
+    showDatabaseLayer("Context/map/map", "Saved Data Layer", isEntity, queryName, querySQL, ps, ls, pos, ts);
+}
+
+//initMap();
+
+
+/*** TRACKLOG ***/
+/*
+setGPSUpdateInterval(4);
+
+onEvent("control/gps/startTimeLog", "click", "startTrackingGPS(\"time\", 10, \"saveTimeGPSTrack()\")");
+onEvent("control/gps/startDistanceLog", "click", "startTrackingGPS(\"distance\", 10, \"saveDistanceGPSTrack()\")");
+onEvent("control/gps/stopTrackLog", "click", "stopTrackingGPS()");
+
+saveTimeGPSTrack() {
+    List attributes = createAttributeList();
+    attributes.add(createEntityAttribute("gps_type", "time", null, null, null));
+    saveGPSTrack(attributes);
+}
+
+saveDistanceGPSTrack() {
+    List attributes = createAttributeList();
+    attributes.add(createEntityAttribute("gps_type", "distance", null, null, null));
+    saveGPSTrack(attributes);
+}
+
+saveGPSTrack(List attributes) {
+    position = getGPSPosition();
+    if (position == null) return;
+
+    //attributes.add(createEntityAttribute("gps_user", "" + user.getUserId(), null, null, null));
+    attributes.add(createEntityAttribute("gps_timestamp", "" + getCurrentTime(), null, null, null));
+    attributes.add(createEntityAttribute("gps_longitude", "" + position.getLongitude(), null, null, null));
+    attributes.add(createEntityAttribute("gps_latitude", "" + position.getLatitude(), null, null, null));
+    //attributes.add(createEntityAttribute("gps_heading", "" + getGPSHeading(), null, null, null));
+    attributes.add(createEntityAttribute("gps_accuracy", "" + getGPSEstimatedAccuracy(), null, null, null));
+    
+    positionProj = getGPSPositionProjected();
+    Point p = new Point(new MapPos(positionProj.getLongitude(), positionProj.getLatitude()), null, (PointStyle) null, null);
+    ArrayList l = new ArrayList();
+    l.add(p);
+    
+    saveArchEnt(null, "gps_track", l, attributes);
+}
+*/
+
+// Texture helper stuff
+
+onEvent("Context/Texture_Helper/Update_Texture", "click", "setTextureActual()");
+onEvent("Context/Context_Deposits/Texture_Helper", "click", "helpSetTextureActual()");
+
+helpSetTextureActual(){
+    showTab("Context/Texture_Helper");
+}
+
+setTextureActual(){
+    Object textureToSet = fetchOne("select vocabid from vocabulary join attributekey using (attributeid)where attributeName = 'Soil Texture Actual'and vocabname = (select vocabname"
+                + " from vocabulary join attributekey using (attributeid)"
+                + " where vocabid = '"+ getFieldValue("Context/Texture_Helper/Soil_Texture") +"'"
+                + " and attributeName = 'Soil Texture');");
+    if(!isNull(textureToSet)){
+        setFieldValue("Context/Context_Deposits/Soil_Texture_Actual", textureToSet.get(0));
+    }
+    cancelTab("Context/Texture_Helper", false);
+    showTab("Context/Context_Deposits");
+}
+
+populateDropDown("Context/Context_Deposits/Soil_Texture_Actual", makeVocab("Soil Texture Actual"));
+populateHierarchicalDropDown("Context/Texture_Helper/Soil_Texture", "Soil Texture");
+
+/*** USER ***/
+
+getDefaultUsersList() {
+    users = fetchAll("select userid, fname ||' ' || lname from user");
+    return users;
+}
+
+populateListForUsers(){
+    populateDropDown("user/usertab/users", getDefaultUsersList());
+
+    Object localUser = fetchOne("select value from localSettings where key = 'User';");
+
+    if (!isNull(localUser)){
+        setFieldValue("user/usertab/users", localUser.get(0));
+    }
+
+}
+
+populateListForUsers();
+
+String username = "";
+String device = "";
+
+login(){
+    if(isNull(getFieldValue("user/usertab/users"))){
+        showWarning("Warning", "Please select a User before logging in.");
+    } else {
+        Object userResult = fetchOne("select userid,fname,lname,email from user where userid='" + getFieldValue("user/usertab/users") + "';");
+        User user = new User(userResult.get(0),userResult.get(1),userResult.get(2),userResult.get(3));
+        userid = userResult.get(0);
+        setUser(user);
+        username = userResult.get(1) + " " + userResult.get(2);
+        showTabGroup("control");
+
+        fetchOne("REPLACE INTO localSettings(key, value) VALUES('User', '"+userid+"');");
+        Object localSite = fetchOne("select value from localSettings where key = 'Site';");
+        Object localArea = fetchOne("select value from localSettings where key = 'Area';");
+        Object localThickness = fetchOne("select value from localSettings where key = 'Thickness';");
+        Object localVolume = fetchOne("select value from localSettings where key = 'Volume';");
+        if (!isNull(localSite)){
+            setFieldValue("control/settings/Site", localSite.get(0));
+        } else {
+            fetchOne("REPLACE INTO localSettings(key, value) VALUES('Site', 'CHA');");
+            setFieldValue("control/settings/Site", "CHA");    
+        }
+        if (!isNull(localArea)){
+            setFieldValue("control/settings/Area", localArea.get(0));
+        } else {
+            setFieldValue("control/settings/Area", "II");
+            fetchOne("REPLACE INTO localSettings(key, value) VALUES('Area', 'II');");
+        }
+        if (!isNull(localThickness)){
+            setFieldValue("control/settings/Target_Spit_Thickness", localThickness.get(0));
+        } else {
+            Object values = makeVocab("Target Spit Thickness");
+            setFieldValue("control/settings/Target_Spit_Thickness", values.get(1).get(0));
+            fetchOne("REPLACE INTO localSettings(key, value) VALUES('Thickness', '"+values.get(1).get(0)+"');");
+        }
+        if (!isNull(localVolume)){
+            setFieldValue("control/settings/BucketVolume", localVolume.get(0));
+        } else {
+            setFieldValue("control/settings/BucketVolume", "10");
+            fetchOne("REPLACE INTO localSettings(key, value) VALUES('Volume', '10');");
+        }
+        
+        populateDropDown("control/settings/Target_Spit_Thickness", makeVocab("Target Spit Thickness"));
+    }
+
+}
+
+onEvent("user/usertab/login", "click", "login()");
+onEvent("user/usertab/guide", "click", "showTab(\"user/help\")");
+
+/*** SYNC ***/
+
+onEvent("control/settings/startsync", "click", "startSync()");
+onEvent("control/settings/stopsync", "click", "stopSync()");
+
+setSyncMinInterval(10.0f);
+setSyncMaxInterval(20.0f);
+setSyncDelay(5.0f);
+
+startSync() {
+    setSyncEnabled(true);
+    setFileSyncEnabled(true);
+}
+
+stopSync() {
+    setSyncEnabled(false);
+    setFileSyncEnabled(false);
+}
+
+// Stuff that needs to happen after everything.
+
+loadContextAttributes();
+loadContextGroupAttributes();
+loadArtefactGroupAttributes();
+loadSampleAttributes();
+loadSpecialFindAttributes();
+loadPhotoLogAttributes();

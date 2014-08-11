@@ -1,0 +1,10 @@
+Default values for Site, Area and Target Spit Thickness
+Start depth - measure + radio button in single field
+Samples/Files in context groups
+Delete Matrices entirely?
+"Search for context" in featues - So dropdown for adding (with search that updates dropdown). List for loading/displaying is fine, but how would you delete?
+Lot ID delimiter - too difficult
+Partial search on Lot ID
+Field name for radio button in Contexts > General
+Context > Relationships list as dropdown?
+Load Feature - Doesn't sound bad, but how do you remove a context from a feature?
