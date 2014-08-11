@@ -1,2 +1,2 @@
-Sample Deluxe Excavation for faims-android
+MEMSAP for faims-android
 =
